@@ -27,6 +27,7 @@ var SubscriptionClient = (function () {
         this.maxId = 0;
         this.subscriptionTimeout = timeout;
         this.waitingSubscriptions = {};
+        this.waitingUnsubscribes = {};
         this.unsentMessagesQueue = [];
         this.reconnect = reconnect;
         this.reconnectSubscriptions = {};
@@ -47,11 +48,9 @@ var SubscriptionClient = (function () {
     SubscriptionClient.prototype.close = function () {
         this.client.close();
     };
-    SubscriptionClient.prototype.subscribe = function (options, handler) {
+    SubscriptionClient.prototype.subscribe = function (opts, handler) {
         var _this = this;
-        this.eventEmitter.emit('subscribe', options);
-        this.applyMiddlewares(options);
-        var query = options.query, variables = options.variables, operationName = options.operationName, context = options.context;
+        var query = opts.query, variables = opts.variables, operationName = opts.operationName, context = opts.context;
         if (!query) {
             throw new Error('Must provide `query` to subscribe.');
         }
@@ -65,16 +64,34 @@ var SubscriptionClient = (function () {
                 '`operationName` must be a string, and `variables` must be an object.');
         }
         var subId = this.generateSubscriptionId();
-        var message = Object.assign(options, { type: messageTypes_1.SUBSCRIPTION_START, id: subId });
-        this.sendMessage(message);
-        this.subscriptions[subId] = { options: options, handler: handler };
-        this.waitingSubscriptions[subId] = true;
-        setTimeout(function () {
-            if (_this.waitingSubscriptions[subId]) {
-                handler([new Error('Subscription timed out - no response from server')]);
+        this.applyMiddlewares(opts).then(function (options) {
+            var query = options.query, variables = options.variables, operationName = options.operationName, context = options.context;
+            if (!query) {
+                handler([new Error('Must provide `query` to subscribe.')]);
                 _this.unsubscribe(subId);
             }
-        }, this.subscriptionTimeout);
+            if (!isString(query) ||
+                (operationName && !isString(operationName)) ||
+                (variables && !isObject(variables))) {
+                handler([new Error('Incorrect option types to subscribe. `subscription` must be a string,' +
+                        '`operationName` must be a string, and `variables` must be an object.')]);
+                _this.unsubscribe(subId);
+            }
+            var message = Object.assign(options, { type: messageTypes_1.SUBSCRIPTION_START, id: subId });
+            _this.sendMessage(message);
+            _this.subscriptions[subId] = { options: options, handler: handler };
+            _this.waitingSubscriptions[subId] = true;
+            if (_this.waitingUnsubscribes[subId]) {
+                delete _this.waitingUnsubscribes[subId];
+                _this.unsubscribe(subId);
+            }
+            setTimeout(function () {
+                if (_this.waitingSubscriptions[subId]) {
+                    handler([new Error('Subscription timed out - no response from server')]);
+                    _this.unsubscribe(subId);
+                }
+            }, _this.subscriptionTimeout);
+        });
         return subId;
     };
     SubscriptionClient.prototype.on = function (eventName, callback, context) {
@@ -96,6 +113,10 @@ var SubscriptionClient = (function () {
         return this.on('subscribe', callback, context);
     };
     SubscriptionClient.prototype.unsubscribe = function (id) {
+        if (!this.subscriptions[id] && !this.waitingSubscriptions[id] && this.maxId >= id) {
+            this.waitingUnsubscribes[id] = true;
+            return;
+        }
         delete this.subscriptions[id];
         delete this.waitingSubscriptions[id];
         var message = { id: id, type: messageTypes_1.SUBSCRIPTION_END };
@@ -109,8 +130,23 @@ var SubscriptionClient = (function () {
     };
     SubscriptionClient.prototype.applyMiddlewares = function (options) {
         var _this = this;
-        var funcs = this.middlewares.slice();
-        funcs.map(function (f) { return f.applyMiddleware.apply(_this, [options, function () { }]); });
+        return new Promise(function (resolve, reject) {
+            var queue = function (funcs, scope) {
+                var next = function () {
+                    if (funcs.length > 0) {
+                        var f = funcs.shift();
+                        if (f) {
+                            f.applyMiddleware.apply(scope, [options, next]);
+                        }
+                    }
+                    else {
+                        resolve(options);
+                    }
+                };
+                next();
+            };
+            queue(_this.middlewares.slice(), _this);
+        });
     };
     SubscriptionClient.prototype.use = function (middlewares) {
         var _this = this;

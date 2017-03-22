@@ -347,32 +347,6 @@ describe('Client', function () {
             subscriptionManager.publish('context', {});
         }, 100);
     });
-    it('should override SubscriptionOptions with onSubscribe', function (done) {
-        var CTX = 'testContext';
-        var CTX2 = 'overrideContext';
-        var client3 = new client_1.SubscriptionClient("ws://localhost:" + TEST_PORT + "/");
-        client3.onSubscribe(function (opts) {
-            opts.context = CTX2;
-        });
-        client3.subscribe({
-            query: "subscription context {\n          context\n        }",
-            variables: {},
-            context: CTX,
-        }, function (error, result) {
-            client3.unsubscribeAll();
-            if (error) {
-                chai_1.assert(false);
-            }
-            if (result) {
-                chai_1.assert.property(result, 'context');
-                chai_1.assert.equal(result.context, CTX2);
-            }
-            done();
-        });
-        setTimeout(function () {
-            subscriptionManager.publish('context', {});
-        }, 100);
-    });
     it('should handle correctly init_fail message', function (done) {
         wsServer.on('connection', function (connection) {
             connection.on('message', function (message) {
@@ -430,7 +404,7 @@ describe('Client', function () {
             chai_1.assert.notProperty(client.subscriptions, "" + subId);
         }, 100);
     });
-    it('queues messages while websocket is still connecting', function () {
+    it('queues messages while websocket is still connecting', function (done) {
         var client = new client_1.SubscriptionClient("ws://localhost:" + TEST_PORT + "/");
         var subId = client.subscribe({
             query: "subscription useInfo($id: String) {\n        user(id: $id) {\n          id\n          name\n        }\n      }",
@@ -440,12 +414,14 @@ describe('Client', function () {
             },
         }, function (error, result) {
         });
-        chai_1.expect(client.unsentMessagesQueue.length).to.equals(1);
         client.unsubscribe(subId);
-        chai_1.expect(client.unsentMessagesQueue.length).to.equals(2);
-        setTimeout(function () {
-            chai_1.expect(client.unsentMessagesQueue.length).to.equals(0);
-        }, 100);
+        client.onConnect(function () {
+            chai_1.expect(client.unsentMessagesQueue.length).to.equals(2);
+            setTimeout(function () {
+                chai_1.expect(client.unsentMessagesQueue.length).to.equals(0);
+                done();
+            }, 100);
+        });
     });
     it('should call error handler when graphql result has errors', function (done) {
         var client = new client_1.SubscriptionClient("ws://localhost:" + TEST_PORT + "/");

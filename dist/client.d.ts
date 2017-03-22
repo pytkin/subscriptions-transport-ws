@@ -32,6 +32,7 @@ export declare class SubscriptionClient {
     private connectionParams;
     private subscriptionTimeout;
     private waitingSubscriptions;
+    private waitingUnsubscribes;
     private unsentMessagesQueue;
     private reconnect;
     private reconnecting;
@@ -45,7 +46,7 @@ export declare class SubscriptionClient {
     constructor(url: string, options?: ClientOptions, webSocketImpl?: any);
     readonly status: any;
     close(): void;
-    subscribe(options: SubscriptionOptions, handler: (error: Error[], result?: any) => void): number;
+    subscribe(opts: SubscriptionOptions, handler: (error: Error[], result?: any) => void): number;
     on(eventName: string, callback: ListenerFn, context?: any): Function;
     onConnect(callback: ListenerFn, context?: any): Function;
     onDisconnect(callback: ListenerFn, context?: any): Function;
@@ -53,7 +54,7 @@ export declare class SubscriptionClient {
     onSubscribe(callback: ListenerFn, context?: any): Function;
     unsubscribe(id: number): void;
     unsubscribeAll(): void;
-    applyMiddlewares(options: SubscriptionOptions): void;
+    applyMiddlewares(options: SubscriptionOptions): Promise<SubscriptionOptions>;
     use(middlewares: MiddlewareInterface[]): SubscriptionClient;
     private sendMessage(message);
     private generateSubscriptionId();
