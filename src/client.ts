@@ -61,6 +61,7 @@ export class SubscriptionClient {
   private connectionParams: ConnectionParams;
   private subscriptionTimeout: number;
   private waitingSubscriptions: {[id: string]: boolean}; // subscriptions waiting for SUBSCRIPTION_SUCCESS
+  private waitingUnsubscribes: {[id: string]: boolean};
   private unsentMessagesQueue: Array<any>; // queued messages while websocket is opening.
   private reconnect: boolean;
   private reconnecting: boolean;
@@ -94,6 +95,7 @@ export class SubscriptionClient {
     this.maxId = 0;
     this.subscriptionTimeout = timeout;
     this.waitingSubscriptions = {};
+    this.waitingUnsubscribes = {};
     this.unsentMessagesQueue = [];
     this.reconnect = reconnect;
     this.reconnectSubscriptions = {};
@@ -114,12 +116,9 @@ export class SubscriptionClient {
     this.client.close();
   }
 
-  public subscribe(options: SubscriptionOptions, handler: (error: Error[], result?: any) => void) {
-    this.eventEmitter.emit('subscribe', options);
-
-    this.applyMiddlewares(options);
-
-    const { query, variables, operationName, context } = options;
+  public subscribe(opts: SubscriptionOptions, handler: (error: Error[], result?: any) => void) {
+    // this.eventEmitter.emit('subscribe', options);
+    const { query, variables, operationName, context } = opts;
 
     if (!query) {
       throw new Error('Must provide `query` to subscribe.');
@@ -137,18 +136,45 @@ export class SubscriptionClient {
       throw new Error('Incorrect option types to subscribe. `subscription` must be a string,' +
       '`operationName` must be a string, and `variables` must be an object.');
     }
-
+    
     const subId = this.generateSubscriptionId();
-    let message = Object.assign(options, {type: SUBSCRIPTION_START, id: subId});
-    this.sendMessage(message);
-    this.subscriptions[subId] = {options, handler};
-    this.waitingSubscriptions[subId] = true;
-    setTimeout( () => {
-      if (this.waitingSubscriptions[subId]) {
-        handler([new Error('Subscription timed out - no response from server')]);
+
+    this.applyMiddlewares(opts).then(options => {
+      const { query, variables, operationName, context } = options;
+
+      if (!query) {
+        handler([new Error('Must provide `query` to subscribe.')]);
         this.unsubscribe(subId);
       }
-    }, this.subscriptionTimeout);
+
+      if (
+        !isString(query) ||
+        ( operationName && !isString(operationName)) ||
+        ( variables && !isObject(variables))
+      ) {
+        handler([new Error('Incorrect option types to subscribe. `subscription` must be a string,' +
+        '`operationName` must be a string, and `variables` must be an object.')]);
+        this.unsubscribe(subId);
+      }
+      
+      let message = Object.assign(options, {type: SUBSCRIPTION_START, id: subId});
+      this.sendMessage(message);
+      this.subscriptions[subId] = {options, handler};
+      this.waitingSubscriptions[subId] = true;
+
+      if(this.waitingUnsubscribes[subId]) {
+        delete this.waitingUnsubscribes[subId];
+        this.unsubscribe(subId);
+      }
+
+      setTimeout( () => {
+        if (this.waitingSubscriptions[subId]) {
+          handler([new Error('Subscription timed out - no response from server')]);
+          this.unsubscribe(subId);
+        }
+      }, this.subscriptionTimeout);
+    });
+
     return subId;
   }
 
@@ -177,9 +203,14 @@ export class SubscriptionClient {
   }
 
   public unsubscribe(id: number) {
+    if(!this.subscriptions[id] && !this.waitingSubscriptions[id] && this.maxId >= id) {
+      this.waitingUnsubscribes[id] = true;
+      return;
+    }
+
     delete this.subscriptions[id];
     delete this.waitingSubscriptions[id];
-    let message = { id: id, type: SUBSCRIPTION_END};
+    let message = { id, type: SUBSCRIPTION_END};
     this.sendMessage(message);
   }
 
@@ -189,9 +220,29 @@ export class SubscriptionClient {
     });
   }
 
-  public applyMiddlewares(options: SubscriptionOptions): void {
-    const funcs = [...this.middlewares];
-    funcs.map(f => f.applyMiddleware.apply(this, [options, ()=> {}]));
+  // public applyMiddlewares(options: SubscriptionOptions): void {
+  //   const funcs = [...this.middlewares];
+  //   funcs.map(f => f.applyMiddleware.apply(this, [options, ()=> {}]));
+  // }
+
+  public applyMiddlewares(options: SubscriptionOptions): Promise<SubscriptionOptions> {
+    return new Promise((resolve, reject) => {
+      const queue = (funcs: MiddlewareInterface[], scope: any) => {
+        const next = () => {
+          if (funcs.length > 0) {
+            const f = funcs.shift();
+            if (f) {
+              f.applyMiddleware.apply(scope, [options, next]);
+            }
+          } else {
+            resolve(options);
+          }
+        };
+        next();
+      };
+
+      queue([...this.middlewares], this);
+    });
   }
 
   public use(middlewares: MiddlewareInterface[]): SubscriptionClient {
